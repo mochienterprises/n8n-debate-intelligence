@@ -1,0 +1,554 @@
+{
+  "name": "Debate Judge - Two-Stage Evaluation Pipeline",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7ca518cc-9dbb-4945-88ac-95da701e6285",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        480,
+        224
+      ],
+      "notes": "Trigger manually for testing or single evaluations"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "source-check",
+              "leftValue": "={{ $json.body?.source || 'webhook' }}",
+              "rightValue": "database",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0737f898-2ebc-44a8-aa94-a2dd4264a4c0",
+      "name": "Route by Source",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        896,
+        224
+      ],
+      "notes": "Route to database fetch or direct webhook input"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5000/api/batch/from-database",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"count\": {{ $json.count || 3 }},\n  \"min_comments\": {{ $json.min_comments || 10 }},\n  \"comments_per_debate\": {{ $json.comments_per_debate || 5 }},\n  \"random\": true\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "092981e5-ca27-4bcf-b123-06d2e175d7ae",
+      "name": "Fetch from Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1104,
+        128
+      ],
+      "notes": "Get debates + comments from Reddit database"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform webhook input to match database format\nconst input = $input.first().json;\n\n// Handle webhook body\nconst body = input.body || input;\n\nconst debate = {\n  id: body.id || `webhook_${Date.now()}`,\n  title: body.title || 'Untitled Debate',\n  content: body.content || body.text || '',\n  author: body.author || 'Anonymous',\n  source: 'webhook_input'\n};\n\nconst responses = (body.responses || []).map((r, i) => ({\n  id: r.id || `resp_${i}`,\n  author: r.author || 'Anonymous',\n  content: r.content || r.text || '',\n  score: r.score || 0\n}));\n\nreturn [{\n  json: {\n    debates_with_responses: [{\n      debate: debate,\n      responses: responses\n    }]\n  }\n}];"
+      },
+      "id": "d02165f4-9b2b-4735-9bb9-97546c41b0d7",
+      "name": "Transform Webhook Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        320
+      ],
+      "notes": "Convert webhook input to standard format"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "debates_with_responses",
+        "options": {}
+      },
+      "id": "120553f7-1d03-4ce0-91ec-9394acd66fd2",
+      "name": "Split Debates",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        224
+      ],
+      "notes": "Process each debate individually"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5000/api/analyze",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"title\": \"{{ $json.debate.title.replace(/\"/g, \"'\") }}\",\n  \"content\": \"{{ $json.debate.content.replace(/\"/g, \"'\").replace(/\\n/g, \" \").substring(0, 3000) }}\",\n  \"provider\": \"{{ $env.AI_PROVIDER || 'openai' }}\",\n  \"model\": \"{{ $env.AI_MODEL || 'gpt-4' }}\"\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "d03d4e5c-989e-4b46-a397-cf573511f440",
+      "name": "Stage 1: Analyze Argument",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1520,
+        224
+      ],
+      "notes": "Analyze argument potential - what makes good/bad responses"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine Stage 1 analysis with original data for Stage 2\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const stage1 = item.json;\n  \n  // Get the original debate data from the previous node\n  // We need to pass through the responses for evaluation\n  const originalData = $('Split Debates').first().json;\n  \n  results.push({\n    json: {\n      debate: originalData.debate,\n      responses: originalData.responses,\n      stage1_analysis: stage1.analysis,\n      stage1_meta: {\n        analysis_id: stage1.analysis_id,\n        timestamp: stage1.timestamp,\n        provider: stage1.provider,\n        model: stage1.model\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "442da4df-614b-49de-842a-28b206656d41",
+      "name": "Prepare Stage 2 Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1696,
+        224
+      ],
+      "notes": "Combine Stage 1 results with responses for evaluation"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "responses",
+        "include": "selectedOtherFields",
+        "fieldsToInclude": "debate,stage1_analysis,stage1_meta",
+        "options": {}
+      },
+      "id": "0df8e075-a7b8-44c9-9720-476d962a1f27",
+      "name": "Split Responses",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1872,
+        224
+      ],
+      "notes": "Evaluate each response individually"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5000/api/evaluate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "1204ab72-af18-4b34-9b1a-29b26ca20694",
+      "name": "Stage 2: Evaluate Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2272,
+        224
+      ],
+      "notes": "Evaluate each response using 4-dimension scoring"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and structure Stage 2 results\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const evaluation = item.json;\n  const originalResponse = $('Split Responses').first().json;\n  \n  results.push({\n    json: {\n      debate_id: originalResponse.debate?.id,\n      debate_title: originalResponse.debate?.title,\n      response_id: originalResponse.responses?.id || originalResponse.id,\n      response_author: originalResponse.responses?.author || originalResponse.author,\n      response_content: (originalResponse.responses?.content || originalResponse.content || '').substring(0, 500),\n      reddit_score: originalResponse.responses?.score || originalResponse.score,\n      \n      // Stage 2 evaluation results\n      evaluation_id: evaluation.evaluation_id,\n      overall_score: evaluation.evaluation?.argument_quality?.overall_score,\n      logical_soundness: evaluation.evaluation?.argument_quality?.logical_soundness,\n      evidence_strength: evaluation.evaluation?.argument_quality?.evidence_strength,\n      persuasiveness: evaluation.evaluation?.argument_quality?.persuasiveness,\n      quality_reasoning: evaluation.evaluation?.argument_quality?.reasoning,\n      \n      fallacy_count: evaluation.evaluation?.logical_fallacies?.fallacy_count,\n      fallacies: evaluation.evaluation?.logical_fallacies?.fallacies_found,\n      \n      rationality_score: evaluation.evaluation?.rationality_concepts?.overall_rationality_score,\n      rationality_concepts: evaluation.evaluation?.rationality_concepts?.concepts,\n      \n      sentiment: evaluation.evaluation?.sentiment_tone?.sentiment_score,\n      civility: evaluation.evaluation?.sentiment_tone?.civility_score,\n      tone: evaluation.evaluation?.sentiment_tone?.tone_categories,\n      \n      stance: evaluation.evaluation?.response_analysis?.stance,\n      addresses_claims: evaluation.evaluation?.response_analysis?.addresses_core_claims,\n      quality_tier: evaluation.evaluation?.final_verdict?.quality_tier,\n      key_strengths: evaluation.evaluation?.final_verdict?.key_strengths,\n      key_weaknesses: evaluation.evaluation?.final_verdict?.key_weaknesses,\n      \n      stage1_analysis: originalResponse.stage1_analysis,\n      full_evaluation: evaluation.evaluation,\n      provider: evaluation.provider,\n      model: evaluation.model,\n      timestamp: evaluation.timestamp\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "c06333fa-02e9-4840-83d8-0d1ceedffb55",
+      "name": "Parse Evaluation Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        224
+      ],
+      "notes": "Structure results for storage and display"
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "all_evaluations",
+        "options": {}
+      },
+      "id": "76461ecd-6fe7-4514-bbd1-7c793734d39c",
+      "name": "Aggregate by Debate",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        2656,
+        224
+      ],
+      "notes": "Group all response evaluations together"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate comprehensive summary and prepare for hub storage\nconst items = $input.all();\nconst allEvaluations = items[0]?.json?.all_evaluations || [];\n\nif (allEvaluations.length === 0) {\n  return [{ json: { error: 'No evaluations to summarize' } }];\n}\n\n// Group by debate\nconst debateGroups = {};\nfor (const eval of allEvaluations) {\n  const debateId = eval.debate_id || 'unknown';\n  if (!debateGroups[debateId]) {\n    debateGroups[debateId] = {\n      debate_id: debateId,\n      debate_title: eval.debate_title,\n      stage1_analysis: eval.stage1_analysis,\n      responses: []\n    };\n  }\n  debateGroups[debateId].responses.push(eval);\n}\n\n// Generate summaries for each debate\nconst results = [];\nfor (const [debateId, group] of Object.entries(debateGroups)) {\n  const responses = group.responses;\n  const scores = responses.map(r => r.overall_score).filter(s => s !== undefined);\n  \n  const stances = {};\n  const tiers = {};\n  \n  for (const r of responses) {\n    if (r.stance) stances[r.stance] = (stances[r.stance] || 0) + 1;\n    if (r.quality_tier) tiers[r.quality_tier] = (tiers[r.quality_tier] || 0) + 1;\n  }\n  \n  // Find best and worst responses\n  const sorted = [...responses].sort((a, b) => (b.overall_score || 0) - (a.overall_score || 0));\n  \n  results.push({\n    json: {\n      hub_entry: {\n        debate_id: debateId,\n        debate_title: group.debate_title,\n        evaluated_at: new Date().toISOString(),\n        stage1_analysis: group.stage1_analysis,\n        \n        summary: {\n          total_responses: responses.length,\n          average_score: scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 10) / 10 : 0,\n          highest_score: scores.length > 0 ? Math.max(...scores) : 0,\n          lowest_score: scores.length > 0 ? Math.min(...scores) : 0,\n          stance_distribution: stances,\n          quality_distribution: tiers,\n          debate_potential: group.stage1_analysis?.debate_potential || 'unknown'\n        },\n        \n        best_response: sorted[0] ? {\n          author: sorted[0].response_author,\n          score: sorted[0].overall_score,\n          stance: sorted[0].stance,\n          tier: sorted[0].quality_tier,\n          strengths: sorted[0].key_strengths\n        } : null,\n        \n        worst_response: sorted[sorted.length - 1] ? {\n          author: sorted[sorted.length - 1].response_author,\n          score: sorted[sorted.length - 1].overall_score,\n          stance: sorted[sorted.length - 1].stance,\n          tier: sorted[sorted.length - 1].quality_tier,\n          weaknesses: sorted[sorted.length - 1].key_weaknesses\n        } : null,\n        \n        all_responses: responses.map(r => ({\n          response_id: r.response_id,\n          author: r.response_author,\n          content_preview: r.response_content?.substring(0, 200) + '...',\n          reddit_score: r.reddit_score,\n          ai_overall_score: r.overall_score,\n          stance: r.stance,\n          quality_tier: r.quality_tier,\n          fallacy_count: r.fallacy_count,\n          rationality_score: r.rationality_score,\n          civility: r.civility,\n          key_strengths: r.key_strengths,\n          key_weaknesses: r.key_weaknesses,\n          full_evaluation: r.full_evaluation\n        }))\n      },\n      \n      // Flat summary for quick display\n      quick_summary: {\n        debate: group.debate_title,\n        responses_evaluated: responses.length,\n        avg_score: scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0,\n        best_score: scores.length > 0 ? Math.max(...scores) : 0,\n        for_count: stances['for'] || 0,\n        against_count: stances['against'] || 0,\n        excellent_count: tiers['excellent'] || 0,\n        good_count: tiers['good'] || 0,\n        fair_count: tiers['fair'] || 0,\n        poor_count: tiers['poor'] || 0\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "90ba1578-820d-48c6-b9b3-bed63df3050b",
+      "name": "Generate Summary & Hub Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2864,
+        224
+      ],
+      "notes": "Create comprehensive summary and hub-ready data"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5000/api/hub",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.hub_entry) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "10c4318c-4da0-407e-bc54-04ad1f538c9b",
+      "name": "Save to Hub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3088,
+        128
+      ],
+      "notes": "Store results in debate hub for your AI site"
+    },
+    {
+      "parameters": {
+        "options": {
+          "fileName": "=evaluation_{{ $json.hub_entry.debate_id }}_{{ $now.format('yyyyMMdd_HHmmss') }}.json"
+        }
+      },
+      "id": "12961cc1-e983-44a8-9fe4-ecc08f3f5e6a",
+      "name": "Convert to JSON File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        3088,
+        320
+      ],
+      "notes": "Create downloadable JSON export"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, summary: $json.quick_summary, hub_id: $json.hub_entry?.debate_id }) }}",
+        "options": {}
+      },
+      "id": "14c9e535-5241-4d61-9a81-dd6d3a971f2b",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3312,
+        416
+      ],
+      "notes": "Send response back to webhook caller"
+    },
+    {
+      "parameters": {},
+      "id": "e76bb15a-1a9d-4fa2-9b22-899f47f1e5ec",
+      "name": "Workflow Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3536,
+        224
+      ],
+      "notes": "Evaluation pipeline finished"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "000c1adc-0b20-4358-a419-6588873f40a8",
+      "name": "Set Batch Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        688,
+        224
+      ],
+      "notes": "Configure batch processing parameters"
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:5000/api/health",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1856,
+        32
+      ],
+      "id": "d201ac5e-fc60-4a37-93b9-1f0991b55fb9",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  results.push({\n    json: {\n      requestBody: {\n        original_title: data.debate?.title || '',\n        original_content: (data.debate?.content || '').substring(0, 2000),\n        stage1_analysis: data.stage1_analysis || {},\n        response: {\n          author: data.responses?.author || 'Anonymous',\n          content: (data.responses?.content || '').substring(0, 2000)\n        },\n        provider: 'openai',\n        model: 'gpt-4'\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        224
+      ],
+      "id": "68bc0c12-7280-4e62-8536-516dbd857e13",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Batch Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Batch Parameters": {
+      "main": [
+        [
+          {
+            "node": "Route by Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Source": {
+      "main": [
+        [
+          {
+            "node": "Fetch from Database",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transform Webhook Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch from Database": {
+      "main": [
+        [
+          {
+            "node": "Split Debates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Webhook Input": {
+      "main": [
+        [
+          {
+            "node": "Split Debates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Debates": {
+      "main": [
+        [
+          {
+            "node": "Stage 1: Analyze Argument",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 1: Analyze Argument": {
+      "main": [
+        [
+          {
+            "node": "Prepare Stage 2 Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Stage 2 Data": {
+      "main": [
+        [
+          {
+            "node": "Split Responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Responses": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 2: Evaluate Response": {
+      "main": [
+        [
+          {
+            "node": "Parse Evaluation Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Evaluation Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate by Debate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate by Debate": {
+      "main": [
+        [
+          {
+            "node": "Generate Summary & Hub Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Summary & Hub Entry": {
+      "main": [
+        [
+          {
+            "node": "Save to Hub",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Convert to JSON File",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Hub": {
+      "main": [
+        [
+          {
+            "node": "Workflow Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to JSON File": {
+      "main": [
+        [
+          {
+            "node": "Workflow Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Response": {
+      "main": [
+        [
+          {
+            "node": "Workflow Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Stage 2: Evaluate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "22069349-7a63-4d09-85f9-edf2726c7780",
+  "meta": {
+    "instanceId": "f34c2dc69a106140ec627299268681b0468d272836f68210e476448215d324a9"
+  },
+  "id": "NUkeNOHDQjEoDOyH",
+  "tags": [
+    {
+      "updatedAt": "2025-12-16T14:56:07.511Z",
+      "createdAt": "2025-12-16T14:56:07.511Z",
+      "id": "5O0K0xKXOi7vKiYF",
+      "name": "ai-evaluation"
+    },
+    {
+      "updatedAt": "2025-12-16T14:56:07.531Z",
+      "createdAt": "2025-12-16T14:56:07.531Z",
+      "id": "rUB1bRdLr5Y4VQXx",
+      "name": "debate-judge"
+    }
+  ]
+}
