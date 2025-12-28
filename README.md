@@ -1,18 +1,18 @@
 # Debate Intelligence System
 
-Automated debate analysis pipeline with n8n workflow orchestration, Flask API server, and a 20,000+ debate database sourced from Reddit.
+Automated debate analysis pipeline with n8n workflow orchestration, Flask API server, and a 93,000+ Reddit comment dataset across 216 structured debates.
 
 ## Features
 
 - **n8n Workflow Automation** - Orchestrates debate data processing
 - **Flask REST API** - Provides structured access to debate data
-- **MySQL Database** - 20k+ debates with arguments, positions, and metadata
+- **SQLite Database** - 216 debates with 93k+ comments, arguments, and metadata
 - **Automated Processing** - Reduces manual data handling
 
 ## Architecture
 
 ```
-n8n Workflow → Flask API → MySQL Database (20k debates)
+n8n Workflow → Flask API → SQLite Database (216 debates, 93k+ comments)
 ```
 
 ## Tech Stack
@@ -49,4 +49,4 @@ See [SETUP_GUIDE.md](docs/SETUP_GUIDE.md) for detailed instructions.
 
 ## Results
 
-Automated processing of 20,000+ Reddit debates with RESTful API access and scalable workflow orchestration.
+Automated processing of 216 Reddit debates with 93,000+ comments, providing RESTful API access and scalable workflow orchestration.
