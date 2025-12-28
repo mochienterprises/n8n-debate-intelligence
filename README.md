@@ -1,6 +1,6 @@
 # Debate Intelligence System
 
-Automated debate analysis pipeline with n8n workflow orchestration, Flask API server, and a 93,000+ Reddit comment dataset across 216 structured debates.
+Automated debate analysis pipeline with n8n orchestration, Flask API, and 93k+ Reddit comment dataset.
 
 ## Features
 
